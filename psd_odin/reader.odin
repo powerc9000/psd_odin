@@ -54,6 +54,7 @@ Psd_Image_Resource :: struct {
 	data      : []byte,
 }
 
+
 Psd_Layer_Info :: struct {
 	name             : string,
 	group_path       : string,
@@ -64,7 +65,7 @@ Psd_Layer_Info :: struct {
 	channel_images   : [dynamic]Psd_Channel_Image,
 	layer_record     : Psd_Layer_Record,
 	composited_image : []byte,
-	maskDim          : Psd_Dimensions
+	transparentMask  : Psd_Dimensions
 
 }
 
@@ -73,8 +74,9 @@ Psd_Dimensions :: struct {
 }
 
 Psd_Channel_Info :: struct #packed {
-	id   : i16be,
-	data : u32be
+	id   : i32,
+	data : u32,
+	offset : u64
 }
 
 Psd_Channel_Image :: struct {
@@ -311,7 +313,12 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 		layer_info.channel_info = make([]Psd_Channel_Info, layer_info.channel_count);
 		for c in 0..<layer_info.channel_count {
 			info : Psd_Channel_Info;
-			_read_from_buffer(mem.ptr_to_bytes(&info), file_data, current_pos);	
+			id : i16be;
+			size : u32be;
+			_read_from_buffer(mem.ptr_to_bytes(&id), file_data, current_pos);
+			_read_from_buffer(mem.ptr_to_bytes(&size), file_data, current_pos);	
+			info.data = u32(size);
+			info.id = i32(id);
 			layer_info.channel_info[c] = info;
 		}
 
@@ -392,8 +399,10 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				layer_mask_details : Layer_Mask_Details;
 				if !_read_from_buffer(mem.ptr_to_bytes(&layer_mask_details), file_data, current_pos) do return _report_error("unable to read layer mask details");
 				_psd_log(layer_mask_details);
-
-				layer_info.maskDim = {layer_mask_details.top, layer_mask_details.left, layer_mask_details.bottom, layer_mask_details.right};
+				isLayerMask := layer_mask_details.real_flags &  u8(Layer_Mask_Header_Flag.MaskFromRenderingData) == 0;
+				if isLayerMask {
+					layer_info.transparentMask = {layer_mask_details.top, layer_mask_details.left, layer_mask_details.bottom, layer_mask_details.right};
+				}
 			}
 		}
 
@@ -500,41 +509,57 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 		append(&file_info.layers, layer_info);
 	}
 
+	find_channel :: proc(layer: Psd_Layer_Info, id: i32) -> int {
+		result := -1;
+		for channel, index in layer.channel_info {
+			if channel.id == id {
+				result = index;
+			}
+		}
+
+		return result;
+	}
 	for layer, lidx in &file_info.layers {
 		width := _width_of(layer.dimensions);
 		height := _height_of(layer.dimensions);
 		for cidx in 0 ..< layer.channel_count {
 			channel_start_pos := current_pos^;
 			_psd_log("LAYER ", lidx+1, layer.name, " CHANNEL ", cidx+1);
-			cWidth:int;
-			cHeight: int;
+			cWidth:int = width;
+			cHeight: int = height;
 			channel := layer.channel_info[cidx];
-			if channel.id < 0 {
-				continue;
+			if channel.id > -2 {
+				if image, image_ok := _read_image_data(cWidth, cHeight, file_data, current_pos); !image_ok {
+					return false;
+				}
+				else {
+					append(&layer.channel_images, image);
+				}
 			}
-			if image, image_ok := _read_image_data(cWidth, cHeight, file_data, current_pos); !image_ok {
-				return false;
-			}
-			else {
-				append(&layer.channel_images, image);
-			}
-
+			current_pos^ = channel_start_pos + channel.data;
 		}
-		if len(layer.channel_images) > 0{
+		if len(layer.channel_images) > 0 {
+			rIndex := find_channel(layer, 0);
+			gIndex := find_channel(layer, 1);
+			bIndex := find_channel(layer, 2);
+			aIndex := find_channel(layer, -1);
+
+
 			if height + width != 0 {
 				layer.composited_image = make([]byte, height * width * 4);
 				for h in 0..<height {
 					for w in 0..<width {
-						if len(layer.channel_images[1].image_data) < 1 {
-							continue;
-						}
 						cidx := (h * width) + w;
 						idx := cidx * 4;
+						r := layer.channel_images[rIndex];
+						g := layer.channel_images[gIndex];
+						b := layer.channel_images[bIndex];
+						a := layer.channel_images[aIndex];
 
-						layer.composited_image[idx + 0] = layer.channel_images[1].image_data[cidx];
-						layer.composited_image[idx + 1] = layer.channel_images[2].image_data[cidx];
-						layer.composited_image[idx + 2] = layer.channel_images[3].image_data[cidx];
-						layer.composited_image[idx + 3] = layer.channel_images[0].image_data[cidx];
+						layer.composited_image[idx + 0] = r.image_data[cidx];
+						layer.composited_image[idx + 1] = g.image_data[cidx];
+						layer.composited_image[idx + 2] = b.image_data[cidx];
+						layer.composited_image[idx + 3] = a.image_data[cidx];
 					}
 				}
 			}
@@ -654,14 +679,12 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 	defer delete(rle_scanlines);
 	if !_read_from_buffer(mem.ptr_to_bytes(&rle_scanlines[0], height), file_data, current_pos) do return _report_error("unable to read rle scanlines");
 
-
 	max_length : i16be = 0;
 	totalSize := 0;
 	for i in 0..<height {
 		totalSize += int(rle_scanlines[i]);
 		max_length = max(max_length, rle_scanlines[i]);
 	}
-
 
 	_psd_log("max length = ", max_length);
 
@@ -721,6 +744,7 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 	}
 }
 	}
+
 	_psd_log("rows_by_width = ", rows_by_width, "  rows_by_stop = ", rows_by_stop);
 
 	if image_idx != width * height {
