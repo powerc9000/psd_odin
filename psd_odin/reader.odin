@@ -718,7 +718,7 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 		else if header != -128 { // one byte of data repeated (1 - header) times
 		data_byte : byte;
 		if !_read_from_buffer(mem.ptr_to_bytes(&data_byte), file_data, current_pos) do return _report_error("unable to read rle data byte");
-		run := int(-header + 1);
+		run := int(-header) + 1;
 		for d := 0; d < run; d += 1 {
 			image.image_data[image_idx] = data_byte;
 			image_idx += 1;
