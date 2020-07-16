@@ -65,7 +65,8 @@ Psd_Layer_Info :: struct {
 	channel_images   : [dynamic]Psd_Channel_Image,
 	layer_record     : Psd_Layer_Record,
 	composited_image : []byte,
-	transparentMask  : Psd_Dimensions
+	transparentMask  : Psd_Dimensions,
+	hasMask          : bool
 
 }
 
@@ -385,6 +386,10 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 					if !_read_from_buffer(mem.ptr_to_bytes(&vec_mask_feather), file_data, current_pos) do return _report_error("unable to read layer vector mask feather");
 					_psd_log("vec_mask_feather = ", vec_mask_feather);
 				}
+			} else if layer_mask_header.flags & u8(Layer_Mask_Header_Flag.LayerMaskDisabled) == 0 {
+				layer_info.hasMask = true;
+				fmt.println(layer_mask_header, layer_mask_header.flags & u8(Layer_Mask_Header_Flag.PositionRelativeToLayer));
+				layer_info.transparentMask = {layer_mask_header.top, layer_mask_header.left, layer_mask_header.bottom, layer_mask_header.right};
 			}
 
 			if layer_mask_header_size == 20 {
@@ -399,10 +404,6 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				layer_mask_details : Layer_Mask_Details;
 				if !_read_from_buffer(mem.ptr_to_bytes(&layer_mask_details), file_data, current_pos) do return _report_error("unable to read layer mask details");
 				_psd_log(layer_mask_details);
-				isLayerMask := layer_mask_details.real_flags &  u8(Layer_Mask_Header_Flag.MaskFromRenderingData) == 0;
-				if isLayerMask {
-					layer_info.transparentMask = {layer_mask_details.top, layer_mask_details.left, layer_mask_details.bottom, layer_mask_details.right};
-				}
 			}
 		}
 
@@ -528,14 +529,20 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 			cWidth:int = width;
 			cHeight: int = height;
 			channel := layer.channel_info[cidx];
-			if channel.id > -2 {
+			if channel.id > -3 {
+				if channel.id == -2 {
+					cWidth = _width_of(layer.transparentMask);
+					cHeight = _height_of(layer.transparentMask);
+
+					fmt.println("mask channel", cWidth, cHeight, width, height);
+				}
 				if image, image_ok := _read_image_data(cWidth, cHeight, file_data, current_pos); !image_ok {
 					return false;
 				}
 				else {
 					append(&layer.channel_images, image);
 				}
-			}
+			} 
 			current_pos^ = channel_start_pos + channel.data;
 		}
 		if len(layer.channel_images) > 0 {
@@ -543,6 +550,11 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 			gIndex := find_channel(layer, 1);
 			bIndex := find_channel(layer, 2);
 			aIndex := find_channel(layer, -1);
+			maskIndex := -1;
+
+			if layer.hasMask {
+				maskIndex = find_channel(layer, -2);
+			}
 
 
 			if height + width != 0 {
@@ -550,6 +562,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				for h in 0..<height {
 					for w in 0..<width {
 						cidx := (h * width) + w;
+
 						idx := cidx * 4;
 						r := layer.channel_images[rIndex];
 						g := layer.channel_images[gIndex];
@@ -560,6 +573,29 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 						layer.composited_image[idx + 1] = g.image_data[cidx];
 						layer.composited_image[idx + 2] = b.image_data[cidx];
 						layer.composited_image[idx + 3] = a.image_data[cidx];
+
+						if maskIndex != -1 {
+							docX := int(layer.dimensions.left) + w;
+							docY := int(layer.dimensions.top) + h;
+							maskX := docX - int(layer.transparentMask.left);
+							maskY := docY - int(layer.transparentMask.top);
+							maskWidth := _width_of(layer.transparentMask);
+							maskHeight := _height_of(layer.transparentMask);
+
+							value : u8;
+
+							mask := layer.channel_images[maskIndex];
+							if maskX < 0 || maskX >= maskWidth || maskY < 0 || maskY >= maskHeight {
+								value = 0;
+							} else {
+								value = mask.image_data[maskY * maskWidth + maskX];
+							}
+							
+							percent := f32(value)/f32(255);
+							alpha := layer.composited_image[idx + 3];
+							alpha = u8(f32(alpha) * percent);
+							layer.composited_image[idx + 3] = alpha;
+						}
 					}
 				}
 			}
