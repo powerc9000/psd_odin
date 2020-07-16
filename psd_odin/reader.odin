@@ -1,13 +1,13 @@
 package psd
 
 /*
- * Adobe PSD Format:
- * https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/
- *
- * This is a bare-bones parser with the intention of being able to grab the
- * image data on a per-layer basis and an overall basis.
- * 
- */
+* Adobe PSD Format:
+* https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/
+*
+* This is a bare-bones parser with the intention of being able to grab the
+* image data on a per-layer basis and an overall basis.
+* 
+*/
 
 import "core:mem"
 import "core:unicode/utf16";
@@ -15,6 +15,7 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strings"
+import "core:runtime";
 
 Psd_File_Header :: struct #packed {
 	signature        : [4]byte,
@@ -59,10 +60,12 @@ Psd_Layer_Info :: struct {
 	group            : bool,
 	dimensions       : Psd_Dimensions,
 	channel_count    : i16be,
-	channel_info     : [dynamic]Psd_Channel_Info,
+	channel_info     : []Psd_Channel_Info,
 	channel_images   : [dynamic]Psd_Channel_Image,
 	layer_record     : Psd_Layer_Record,
 	composited_image : []byte,
+	maskDim          : Psd_Dimensions
+
 }
 
 Psd_Dimensions :: struct {
@@ -71,7 +74,7 @@ Psd_Dimensions :: struct {
 
 Psd_Channel_Info :: struct #packed {
 	id   : i16be,
-	data : i32be
+	data : u32be
 }
 
 Psd_Channel_Image :: struct {
@@ -138,7 +141,7 @@ psd_file_load_from_memory :: proc (file_data : []byte) -> (Psd_File_Info, bool) 
 	if !_psd_read_layer_and_mask_data(&file_info, file_data, &current_pos) {
 		return {}, false;
 	}
-/*
+	/*
 	if !_psd_read_image_data(&file_info, file_data, &current_pos) {
 		return {}, false;
 	}
@@ -287,7 +290,6 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 	file_info.first_layer_transparent = layer_count < 0; // first_alpha_channel_contains_transparency_data
 
 	layer_count = layer_count < 0 ? -layer_count : layer_count;
-
 	for l in 0 ..< layer_count {
 		if current_pos^ > layer_mask_start_pos + u32(layer_mask_len) {
 			_psd_log("exceeded layer mask position, exiting");
@@ -299,18 +301,22 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 		if !_read_from_buffer(mem.ptr_to_bytes(&layer_info.dimensions), file_data, current_pos) do return _report_error("unable to read layer dimensions");
 		_psd_log("layer dimensions: ", layer_info.dimensions);
 
+
 		if !_read_from_buffer(mem.ptr_to_bytes(&layer_info.channel_count), file_data, current_pos) do return _report_error("unable to read layer channel count");
 		_psd_log("channel_count = ", layer_info.channel_count);
 
+
+		channel_info_start := current_pos^;
+
+		layer_info.channel_info = make([]Psd_Channel_Info, layer_info.channel_count);
 		for c in 0..<layer_info.channel_count {
-			current_pos^ += size_of(Psd_Channel_Info);
-			/*
-			channel_info : Psd_Channel_Info;
-			if !_read_from_buffer(mem.ptr_to_bytes(&channel_info), file_data, current_pos) do return _report_error("unable to read layer channel data");
-			_psd_log("channel ", c, ": ", channel_info);
-			append(&layer_info.channel_info, channel_info);
-			*/
+			info : Psd_Channel_Info;
+			_read_from_buffer(mem.ptr_to_bytes(&info), file_data, current_pos);	
+			layer_info.channel_info[c] = info;
 		}
+
+
+		current_pos^ = channel_info_start + u32(layer_info.channel_count * 6);
 
 		blend_mode_signature : [4]byte;
 		if !_read_from_buffer(blend_mode_signature[:], file_data, current_pos) do return _report_error("unable to read blend mode signature");
@@ -321,10 +327,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 		if !_read_from_buffer(mem.ptr_to_bytes(&layer_info.layer_record), file_data, current_pos) do return _report_error("unable to read layer record");
 		_psd_log("layer_record = ", layer_info.layer_record);
 
-		end_of_layer_pos := current_pos^ + u32(layer_info.layer_record.extra_data_field_len);
-
-		blend_mode_key_str := strings.string_from_ptr(&layer_info.layer_record.blend_mode_key[0], len(layer_info.layer_record.blend_mode_key));
-		_psd_log("blend_mode_key = ", blend_mode_key_str);
+		extra_data_start := current_pos^;
 
 		layer_mask_header_size : u32be;
 		if !_read_from_buffer(mem.ptr_to_bytes(&layer_mask_header_size), file_data, current_pos) do return _report_error("unable to read layer mask header size");
@@ -384,11 +387,13 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				Layer_Mask_Details :: struct #packed {
 					real_flags : byte,
 					real_user_mask_bg : byte,
-					top, left, bottom_right : u32be,
+					top, left, bottom, right : u32be,
 				};
 				layer_mask_details : Layer_Mask_Details;
 				if !_read_from_buffer(mem.ptr_to_bytes(&layer_mask_details), file_data, current_pos) do return _report_error("unable to read layer mask details");
 				_psd_log(layer_mask_details);
+
+				layer_info.maskDim = {layer_mask_details.top, layer_mask_details.left, layer_mask_details.bottom, layer_mask_details.right};
 			}
 		}
 
@@ -398,9 +403,11 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 			composite_gray_blend_source : i32be,
 			composite_gray_blend_dest_range : i32be,
 		};
+
 		layer_blending_range : Layer_Blending_Range;
 		layer_blending_section_start := current_pos^;
 		if !_read_from_buffer(mem.ptr_to_bytes(&layer_blending_range), file_data, current_pos) do return _report_error("unable to read layer blending range");
+		/*
 		_psd_log(layer_blending_range);
 		//Chanel count includes the composite gray blend and we already read those
 		for c in 0..< layer_info.channel_count - 1{
@@ -410,36 +417,33 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 
 			_psd_log("channel ", c, " source = ", channel_source_range, " dest = ", channel_dest_range);
 		}
-		current_pos^ = layer_blending_section_start + u32(layer_blending_range.length) + 4;
+		*/
+		current_pos^ = (layer_blending_section_start + 4) + u32(layer_blending_range.length);
 
 		layer_name_len : byte;
 		if !_read_from_buffer(mem.ptr_to_bytes(&layer_name_len), file_data, current_pos) do return _report_error("unable to read layer name length");
-		if layer_name_len == 0 {
-			current_pos^ += 1;
-		}
-		else {
+		if layer_name_len != 0 {
 			layer_name_bytes : [256]byte;
 			if !_read_from_buffer(layer_name_bytes[:layer_name_len], file_data, current_pos) do return _report_error("unable to read layer name");
 			_psd_log("layer_name = ", strings.string_from_ptr(&layer_name_bytes[0], int(layer_name_len)), " len:", layer_name_len);
 
 			layer_info.name = strings.clone(strings.string_from_ptr(&layer_name_bytes[0], int(layer_name_len)));
 		}
-
+		layer_name_padded := u32(layer_name_len) + 1;
+		if layer_name_padded % 4 != 0 {
+			pad := 4 - (layer_name_padded % 4);
+			layer_name_padded += pad;
+			current_pos^ += pad;
+		}
+		start_additional_data := current_pos^;
+		additionalLayerInfoSize := u32(layer_info.layer_record.extra_data_field_len) - u32(layer_mask_header_size) - u32(layer_blending_range.length) - layer_name_padded - 8;
+		toRead := additionalLayerInfoSize;
 		// the specs say that the layer name is supposed to be padded to 4 bytes, but adjusting the current position based on the length of
 		// the layer name string didn't seem to work.  so just search the next 16 bytes for the expected signature
 
-		for i in 0 .. 15 {
-			pos := current_pos^ + u32(i);
-			sigcheck := string(file_data[pos: pos + 4]);
-			if sigcheck == "8BIM" || sigcheck == "8B64" {
-				current_pos^ += u32(i);
-				break;
-			}
-		}
-
 		// check for extra information added with Photoshop 4 and later
 		_psd_log("reading additional info");
-		for {
+		for toRead > 0{
 			signature : [4]byte;
 			if !_read_from_buffer(signature[:], file_data, current_pos) do return _report_error("unable to read additional layer information signature");
 			signature_string := strings.string_from_ptr(&signature[0], len(signature));
@@ -454,9 +458,14 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 			keycode_str := strings.string_from_ptr(&key_code[0], len(key_code));
 			_psd_log("keycode_str = ", keycode_str);
 
-			length : i32be;
+			length : u32be;
 			if !_read_from_buffer(mem.ptr_to_bytes(&length), file_data, current_pos) do return _report_error("unable to read additional layer information length");
 			//_psd_log("info length = ", length);
+			if length % 4 != 0 {
+				pad := 4 - length % 4;
+				length += pad;
+			}
+
 
 			start := current_pos^;
 
@@ -466,61 +475,70 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				if type == 1 || type == 2 {
 					layer_info.group = true;
 				}
+				current_pos^ += u32(length - 4);
 			}
 			//utf-16 name
 			else if keycode_str == "luni" {
 				total_characters : u32be;
 
 				if !_read_from_buffer(mem.ptr_to_bytes(&total_characters), file_data, current_pos) do return _report_error("couldn't read layer unicode name length");
-				
-				utf16Name := make([dynamic]u16be, total_characters, total_characters);
+
+				utf16Name := make([]u16be, total_characters);
 				defer delete(utf16Name);
-				if !_read_from_buffer(transmute([]u8)utf16Name[:], file_data, current_pos) do return _report_error("couldn't read layer unicode name");
-			} 				
+				for char in 0..<total_characters {
+					_read_from_buffer(mem.ptr_to_bytes(&utf16Name[char]), file_data, current_pos);
+				}
+				skip := u32(length - 4 - total_characters * 2);
+				current_pos^ += skip;
+			} else {
+				current_pos^ += u32(length);
+			}
 			//Just jump to where we should be. Maybe we read something bad?
-			current_pos^ = (start + u32(length));
-			
-
+			toRead -= 12 + u32(length);
 		}
-
-		current_pos^ = end_of_layer_pos;
-
+		current_pos^ = extra_data_start + u32(layer_info.layer_record.extra_data_field_len);
 		append(&file_info.layers, layer_info);
 	}
 
 	for layer, lidx in &file_info.layers {
 		width := _width_of(layer.dimensions);
 		height := _height_of(layer.dimensions);
-
 		for cidx in 0 ..< layer.channel_count {
 			channel_start_pos := current_pos^;
 			_psd_log("LAYER ", lidx+1, layer.name, " CHANNEL ", cidx+1);
-/*
-			if image, image_ok := _read_image_data(width, height, file_data, current_pos); !image_ok {
+			cWidth:int;
+			cHeight: int;
+			channel := layer.channel_info[cidx];
+			if channel.id < 0 {
+				continue;
+			}
+			if image, image_ok := _read_image_data(cWidth, cHeight, file_data, current_pos); !image_ok {
 				return false;
 			}
 			else {
 				append(&layer.channel_images, image);
 			}
-			*/
 
 		}
-/*
-		if height + width != 0 {
-			layer.composited_image = make([]byte, height * width * 4);
-			for h in 0..<height {
-				for w in 0..<width {
-					cidx := (h * width) + w;
-					idx := cidx * 4;
+		if len(layer.channel_images) > 0{
+			if height + width != 0 {
+				layer.composited_image = make([]byte, height * width * 4);
+				for h in 0..<height {
+					for w in 0..<width {
+						if len(layer.channel_images[1].image_data) < 1 {
+							continue;
+						}
+						cidx := (h * width) + w;
+						idx := cidx * 4;
 
-					layer.composited_image[idx + 0] = layer.channel_images[1].image_data[cidx];
-					layer.composited_image[idx + 1] = layer.channel_images[2].image_data[cidx];
-					layer.composited_image[idx + 2] = layer.channel_images[3].image_data[cidx];
-					layer.composited_image[idx + 3] = layer.channel_images[0].image_data[cidx];
+						layer.composited_image[idx + 0] = layer.channel_images[1].image_data[cidx];
+						layer.composited_image[idx + 1] = layer.channel_images[2].image_data[cidx];
+						layer.composited_image[idx + 2] = layer.channel_images[3].image_data[cidx];
+						layer.composited_image[idx + 3] = layer.channel_images[0].image_data[cidx];
+					}
 				}
 			}
 		}
-		*/
 	}
 
 	current_pos^ = layer_mask_start_pos + u32(layer_mask_len);
@@ -566,7 +584,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 // ----------------------------------------------------------------------------
 
 _psd_read_image_data :: proc(file_info : ^Psd_File_Info, file_data: []byte, current_pos: ^u32) -> bool {
-	
+
 	// stored RRRR...GGGG...BBBB...AAAA....
 
 	w := int(file_info.file_header.width_in_pixels);
@@ -605,23 +623,22 @@ _read_image_data ::proc(width, height: int, file_data: []byte, current_pos: ^u32
 	//_psd_log("channel ", cidx, " compression = ", compression);
 
 	_psd_log("layer dims: ", width, " x ", height);
-
 	if width + height == 0 do return {}, true;
 
 	image : Psd_Channel_Image;
 	image.image_data = make([]byte, width * height);
 
 	if compression == 0 { // raw image
-		if !_read_from_buffer(image.image_data, file_data, current_pos) do return {}, _report_error("unable to read uncompressed channel image data");
-	}
-	else if compression == 1 { // RLE compressed
-		if !_rle_decode(width, height, &image, file_data, current_pos) do return {}, false;
+	if !_read_from_buffer(image.image_data, file_data, current_pos) do return {}, _report_error("unable to read uncompressed channel image data");
+}
+else if compression == 1 { // RLE compressed
+if !_rle_decode(width, height, &image, file_data, current_pos) do return {}, false;
 	}
 	else if compression == 2 { // ZIP without prediction
-		return {}, _report_error("unsupported compression encountered [2]");
-	}
-	else if compression == 3 { // ZIP with prediction
-		return {}, _report_error("unsupported compression encountered [3]");
+	return {}, _report_error("unsupported compression encountered [2]");
+}
+else if compression == 3 { // ZIP with prediction
+return {}, _report_error("unsupported compression encountered [3]");
 	}
 	else {
 		return {}, _report_error("unexpected compression encountered:", compression);
@@ -637,15 +654,18 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 	defer delete(rle_scanlines);
 	if !_read_from_buffer(mem.ptr_to_bytes(&rle_scanlines[0], height), file_data, current_pos) do return _report_error("unable to read rle scanlines");
 
+
 	max_length : i16be = 0;
+	totalSize := 0;
 	for i in 0..<height {
+		totalSize += int(rle_scanlines[i]);
 		max_length = max(max_length, rle_scanlines[i]);
 	}
+
 
 	_psd_log("max length = ", max_length);
 
 	image_idx := 0;
-
 	rows_by_width := 0;
 	rows_by_stop := 0;
 	for h in 0..<height {
@@ -666,40 +686,40 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 			if !_read_from_buffer(mem.ptr_to_bytes(&header), file_data, current_pos) do return _report_error("unable to read rle header");
 			sections += 1;
 			if header >= 0 { // 1 + header bytes of data
-				iheader := int(header) + 1;
-				if !_read_from_buffer(mem.ptr_to_bytes(&image.image_data[image_idx], iheader), file_data, current_pos) do return _report_error("unable to read rle data");
-				image_idx += iheader;
-				pixels_this_row += iheader;
-				pos += 1;
-			}
-			else if header != -128 { // one byte of data repeated (1 - header) times
-				data_byte : byte;
-				if !_read_from_buffer(mem.ptr_to_bytes(&data_byte), file_data, current_pos) do return _report_error("unable to read rle data byte");
-				run := -int(header);
-				for d := 0; d <= run; d += 1 {
-					image.image_data[image_idx] = data_byte;
-					image_idx += 1;
-					pixels_this_row += 1;
-				}
-				neg += 1;
-			}
-			// else no operation, just skip and grab the next header
-
-			if current_pos^ >= stop_pos {
-				if current_pos^ > stop_pos {
-					_psd_log("went over by ", current_pos^ - stop_pos);
-				}
-				rows_by_stop += 1;
-				if pixels_this_row > width do _psd_log("row over by ", pixels_this_row - width, " pixels");
-
-				if pixels_this_row < width {
-					_psd_log("row ", h, " is short ", width-pixels_this_row, " pixels.  sections: ", sections, " pos:", pos, " neg:", neg);
-					image_idx += width - pixels_this_row;
-				}
-
-				break;
-			}
+			iheader := int(header) + 1;
+			if !_read_from_buffer(mem.ptr_to_bytes(&image.image_data[image_idx], iheader), file_data, current_pos) do return _report_error("unable to read rle data");
+			image_idx += iheader;
+			pixels_this_row += iheader;
+			pos += 1;
 		}
+		else if header != -128 { // one byte of data repeated (1 - header) times
+		data_byte : byte;
+		if !_read_from_buffer(mem.ptr_to_bytes(&data_byte), file_data, current_pos) do return _report_error("unable to read rle data byte");
+		run := int(-header + 1);
+		for d := 0; d < run; d += 1 {
+			image.image_data[image_idx] = data_byte;
+			image_idx += 1;
+			pixels_this_row += 1;
+		}
+		neg += 1;
+	}
+	// else no operation, just skip and grab the next header
+
+	if current_pos^ >= stop_pos {
+		if current_pos^ > stop_pos {
+			_psd_log("went over by ", current_pos^ - stop_pos);
+		}
+		rows_by_stop += 1;
+		if pixels_this_row > width do _psd_log("row over by ", pixels_this_row - width, " pixels");
+
+		if pixels_this_row < width {
+			_psd_log("row ", h, " is short ", width-pixels_this_row, " pixels.  sections: ", sections, " pos:", pos, " neg:", neg);
+			image_idx += width - pixels_this_row;
+		}
+
+		break;
+	}
+}
 	}
 	_psd_log("rows_by_width = ", rows_by_width, "  rows_by_stop = ", rows_by_stop);
 
@@ -723,7 +743,7 @@ _height_of :: proc(dims : Psd_Dimensions) -> int {
 _read_from_buffer :: proc (dest : []byte, source : []byte, current_pos : ^u32) -> bool {
 	if u32(len(source)) < current_pos^ + u32(len(dest)) {
 		_psd_log_error("trying to read", u32(len(dest)), "bytes when only", u32(len(source)) - current_pos^, "bytes remain (out of", len(source), ")");
- 		return false;
+		return false;
 	}
 
 	copy(dest, source[current_pos^:current_pos^ + u32(len(dest))]);
@@ -744,7 +764,7 @@ _psd_log :: proc(args : ..any, location := #caller_location) {
 }
 
 _psd_logf :: proc(format:string, args : ..any) {
-//	log.debugf(format, ..args);
+	//	log.debugf(format, ..args);
 }
 
 _psd_log_error :: proc(args : ..any) {
