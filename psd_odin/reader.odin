@@ -71,7 +71,7 @@ Psd_Layer_Info :: struct {
 }
 
 Psd_Dimensions :: struct {
-	top, left, bottom, right : u32be,
+	top, left, bottom, right : i32be,
 }
 
 Psd_Channel_Info :: struct #packed {
@@ -127,21 +127,24 @@ psd_file_load_from_memory :: proc (file_data : []byte) -> (Psd_File_Info, bool) 
 
 	_psd_log(file_info.file_header);
 	if !_psd_verify_header(&file_info.file_header) {
-
+		fmt.println("couldn't verify header");
 		return {}, false;
 	}
 
 	// color mode
 	if !_psd_read_color_mode_data(&file_info, file_data, &current_pos) {
+		fmt.println("couldn't load color mode");
 		return {}, false;
 	}
 
 	// image resources
 	if !_psd_read_image_resources_data(&file_info, file_data, &current_pos) {
+		fmt.println("couldn't read resourced");
 		return {}, false;
 	}
 
 	if !_psd_read_layer_and_mask_data(&file_info, file_data, &current_pos) {
+		fmt.println("couldn't load layers");
 		return {}, false;
 	}
 	/*
@@ -275,6 +278,109 @@ _psd_read_image_resources_data :: proc(file_info : ^Psd_File_Info, file_data: []
 
 // ----------------------------------------------------------------------------
 
+psd_create_layer_image :: proc(layer: ^Psd_Layer_Info, dWidth, dHeight: int, file_data: []byte) -> []byte{
+
+	find_channel :: proc(layer: Psd_Layer_Info, id: i32) -> int {
+		result := -1;
+		for channel, index in layer.channel_info {
+			if channel.id == id {
+				result = index;
+			}
+		}
+
+		return result;
+	}
+	width := _width_of(layer.dimensions);
+	height := _height_of(layer.dimensions);
+	for cidx in 0 ..< layer.channel_count {
+		cWidth:int = width;
+		cHeight: int = height;
+		channel := layer.channel_info[cidx];
+		current_pos := u32(channel.offset);
+		if channel.id > -3 {
+			if channel.id == -2 {
+				cWidth = _width_of(layer.transparentMask);
+				cHeight = _height_of(layer.transparentMask);
+			}
+			if image, image_ok := _read_image_data(cWidth, cHeight, file_data, &current_pos); !image_ok {
+				return {};
+			}
+			else {
+				append(&layer.channel_images, image);
+			}
+		} 
+	}
+	if len(layer.channel_images) > 0 {
+		rIndex := find_channel(layer^, 0);
+		gIndex := find_channel(layer^, 1);
+		bIndex := find_channel(layer^, 2);
+		aIndex := find_channel(layer^, -1);
+		maskIndex := -1;
+
+		if layer.hasMask {
+			maskIndex = find_channel(layer^, -2);
+		}
+
+
+		if height + width != 0 {
+			layer.composited_image = make([]byte, dWidth * dHeight * 4);
+			for h in 0..<dHeight{
+
+				for w in 0..<dWidth {
+					layerX := w - int(layer.dimensions.left);
+					layerY := h - int(layer.dimensions.top);
+					channelValue := (layerY * width) + layerX;
+					finalPixel := (h * dWidth) + w;
+
+					idx := finalPixel * 4;
+					
+					if layerX < 0 || layerX >= width || layerY < 0 || layerY >= height {
+						layer.composited_image[idx + 0] = 0;
+						layer.composited_image[idx + 1] = 0;
+						layer.composited_image[idx + 2] = 0;
+						layer.composited_image[idx + 3] = 0;
+						continue;
+					}
+					r := layer.channel_images[rIndex];
+					g := layer.channel_images[gIndex];
+					b := layer.channel_images[bIndex];
+					a := layer.channel_images[aIndex];
+
+					layer.composited_image[idx + 0] = r.image_data[channelValue];
+					layer.composited_image[idx + 1] = g.image_data[channelValue];
+					layer.composited_image[idx + 2] = b.image_data[channelValue];
+					layer.composited_image[idx + 3] = a.image_data[channelValue];
+					if maskIndex != -1   {
+						docX := int(layer.dimensions.left) + layerX;
+						docY := int(layer.dimensions.top) + layerY;
+						maskX := docX - int(layer.transparentMask.left);
+						maskY := docY - int(layer.transparentMask.top);
+						maskWidth := _width_of(layer.transparentMask);
+						maskHeight := _height_of(layer.transparentMask);
+
+						value : u8;
+
+						mask := layer.channel_images[maskIndex];
+						if maskX < 0 || maskX >= maskWidth || maskY < 0 || maskY >= maskHeight {
+							value = 0;
+						} else {
+							value = mask.image_data[maskY * maskWidth + maskX];
+						}
+
+						percent := f32(value)/f32(255);
+						alpha := layer.composited_image[idx + 3];
+						alpha = u8(f32(alpha) * percent);
+						layer.composited_image[idx + 3] = alpha;
+					}
+				}
+			}
+		}
+	} else {
+		fmt.println("no images why?", layer.name);
+	}
+	return layer.composited_image;
+}
+
 _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []byte, current_pos: ^u32) -> bool {
 	layer_mask_len : u32be;
 	if !_read_from_buffer(mem.ptr_to_bytes(&layer_mask_len), file_data, current_pos) do return _report_error("unable to read layer mask length");
@@ -343,7 +449,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 
 		if layer_mask_header_size != 0 {
 			Layer_Mask_Header :: struct #packed {
-				top, left, bottom, right : u32be,
+				top, left, bottom, right : i32be,
 				default_color : byte,
 				flags : byte,
 			};
@@ -388,7 +494,6 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				}
 			} else if layer_mask_header.flags & u8(Layer_Mask_Header_Flag.LayerMaskDisabled) == 0 {
 				layer_info.hasMask = true;
-				fmt.println(layer_mask_header, layer_mask_header.flags & u8(Layer_Mask_Header_Flag.PositionRelativeToLayer));
 				layer_info.transparentMask = {layer_mask_header.top, layer_mask_header.left, layer_mask_header.bottom, layer_mask_header.right};
 			}
 
@@ -510,95 +615,13 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 		append(&file_info.layers, layer_info);
 	}
 
-	find_channel :: proc(layer: Psd_Layer_Info, id: i32) -> int {
-		result := -1;
-		for channel, index in layer.channel_info {
-			if channel.id == id {
-				result = index;
-			}
-		}
-
-		return result;
-	}
 	for layer, lidx in &file_info.layers {
-		width := _width_of(layer.dimensions);
-		height := _height_of(layer.dimensions);
 		for cidx in 0 ..< layer.channel_count {
 			channel_start_pos := current_pos^;
 			_psd_log("LAYER ", lidx+1, layer.name, " CHANNEL ", cidx+1);
-			cWidth:int = width;
-			cHeight: int = height;
-			channel := layer.channel_info[cidx];
-			if channel.id > -3 {
-				if channel.id == -2 {
-					cWidth = _width_of(layer.transparentMask);
-					cHeight = _height_of(layer.transparentMask);
-
-					fmt.println("mask channel", cWidth, cHeight, width, height);
-				}
-				if image, image_ok := _read_image_data(cWidth, cHeight, file_data, current_pos); !image_ok {
-					return false;
-				}
-				else {
-					append(&layer.channel_images, image);
-				}
-			} 
+			channel := &layer.channel_info[cidx];
+			channel.offset = u64(channel_start_pos);
 			current_pos^ = channel_start_pos + channel.data;
-		}
-		if len(layer.channel_images) > 0 {
-			rIndex := find_channel(layer, 0);
-			gIndex := find_channel(layer, 1);
-			bIndex := find_channel(layer, 2);
-			aIndex := find_channel(layer, -1);
-			maskIndex := -1;
-
-			if layer.hasMask {
-				maskIndex = find_channel(layer, -2);
-			}
-
-
-			if height + width != 0 {
-				layer.composited_image = make([]byte, height * width * 4);
-				for h in 0..<height {
-					for w in 0..<width {
-						cidx := (h * width) + w;
-
-						idx := cidx * 4;
-						r := layer.channel_images[rIndex];
-						g := layer.channel_images[gIndex];
-						b := layer.channel_images[bIndex];
-						a := layer.channel_images[aIndex];
-
-						layer.composited_image[idx + 0] = r.image_data[cidx];
-						layer.composited_image[idx + 1] = g.image_data[cidx];
-						layer.composited_image[idx + 2] = b.image_data[cidx];
-						layer.composited_image[idx + 3] = a.image_data[cidx];
-
-						if maskIndex != -1 {
-							docX := int(layer.dimensions.left) + w;
-							docY := int(layer.dimensions.top) + h;
-							maskX := docX - int(layer.transparentMask.left);
-							maskY := docY - int(layer.transparentMask.top);
-							maskWidth := _width_of(layer.transparentMask);
-							maskHeight := _height_of(layer.transparentMask);
-
-							value : u8;
-
-							mask := layer.channel_images[maskIndex];
-							if maskX < 0 || maskX >= maskWidth || maskY < 0 || maskY >= maskHeight {
-								value = 0;
-							} else {
-								value = mask.image_data[maskY * maskWidth + maskX];
-							}
-							
-							percent := f32(value)/f32(255);
-							alpha := layer.composited_image[idx + 3];
-							alpha = u8(f32(alpha) * percent);
-							layer.composited_image[idx + 3] = alpha;
-						}
-					}
-				}
-			}
 		}
 	}
 
