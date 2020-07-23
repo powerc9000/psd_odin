@@ -279,7 +279,6 @@ _psd_read_image_resources_data :: proc(file_info : ^Psd_File_Info, file_data: []
 // ----------------------------------------------------------------------------
 
 psd_create_layer_image :: proc(layer: ^Psd_Layer_Info, dWidth, dHeight: int, file_data: []byte) -> []byte{
-
 	find_channel :: proc(layer: Psd_Layer_Info, id: i32) -> int {
 		result := -1;
 		for channel, index in layer.channel_info {
