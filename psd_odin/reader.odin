@@ -763,6 +763,10 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 		neg := 0;
 		pixels_this_row := 0;
 		for {
+			if image_idx >= len(image.image_data) {
+				fmt.println("overran");
+				return _report_error("overran data");
+			}
 			header : i8;
 			if !_read_from_buffer(mem.ptr_to_bytes(&header), file_data, current_pos) do return _report_error("unable to read rle header");
 			sections += 1;
@@ -778,7 +782,9 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 		if !_read_from_buffer(mem.ptr_to_bytes(&data_byte), file_data, current_pos) do return _report_error("unable to read rle data byte");
 		run := int(-header) + 1;
 		for d := 0; d < run; d += 1 {
-			image.image_data[image_idx] = data_byte;
+			if image_idx < len(image.image_data) {
+				image.image_data[image_idx] = data_byte;
+			}
 			image_idx += 1;
 			pixels_this_row += 1;
 		}
