@@ -848,7 +848,7 @@ _report_error :: proc (args : ..any) -> bool {
 
 _psd_log :: proc(args : ..any, location := #caller_location) {
 	//fmt.println(..args);
-	log.debug(..args);
+	log.debug(args=args, location=location);
 }
 
 _psd_logf :: proc(format:string, args : ..any) {
