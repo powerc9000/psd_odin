@@ -56,6 +56,7 @@ Psd_Image_Resource :: struct {
 
 
 Psd_Layer_Info :: struct {
+	id               : i32be,
 	name             : string,
 	group_path       : string,
 	group            : bool,
@@ -556,8 +557,8 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 		// the layer name string didn't seem to work.  so just search the next 16 bytes for the expected signature
 
 		// check for extra information added with Photoshop 4 and later
-		_psd_log("reading additional info");
 		for toRead > 0{
+			lastPos := current_pos^;
 			signature : [4]byte;
 			if !_read_from_buffer(signature[:], file_data, current_pos) do return _report_error("unable to read additional layer information signature");
 			signature_string := strings.string_from_ptr(&signature[0], len(signature));
@@ -574,11 +575,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 
 			length : u32be;
 			if !_read_from_buffer(mem.ptr_to_bytes(&length), file_data, current_pos) do return _report_error("unable to read additional layer information length");
-			//_psd_log("info length = ", length);
-			if length % 4 != 0 {
-				pad := 4 - length % 4;
-				length += pad;
-			}
+			_psd_log("info length = ", length);
 
 
 			start := current_pos^;
@@ -604,10 +601,20 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 				}
 				skip := u32(length - 4 - total_characters * 2);
 				current_pos^ += skip;
+			} else if keycode_str == "lyid" {
+				//skip length
+				id : i32be;
+				if !_read_from_buffer(mem.ptr_to_bytes(&id), file_data, current_pos) {
+					return _report_error("Couldn't read layer id");
+				}
+				layer_info.id = id;
+				_psd_log(layer_info.id, id, layer_info.name);
+				current_pos^ += u32(length - 4);
 			} else {
 				current_pos^ += u32(length);
 			}
 			//Just jump to where we should be. Maybe we read something bad?
+			current_pos^ = lastPos + 12 + u32(length);
 			toRead -= 12 + u32(length);
 		}
 		current_pos^ = extra_data_start + u32(layer_info.layer_record.extra_data_field_len);
