@@ -399,6 +399,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 	file_info.first_layer_transparent = layer_count < 0; // first_alpha_channel_contains_transparency_data
 
 	layer_count = layer_count < 0 ? -layer_count : layer_count;
+	log.info("psd has ", layer_count, "layers");
 	for l in 0 ..< layer_count {
 		if current_pos^ > layer_mask_start_pos + u32(layer_mask_len) {
 			_psd_log("exceeded layer mask position, exiting");
