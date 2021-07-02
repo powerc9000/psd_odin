@@ -102,6 +102,8 @@ psd_file_load :: proc {psd_file_load_from_disk, psd_file_load_from_memory};
 
 psd_file_load_from_disk :: proc (file_name : string) -> (Psd_File_Info, bool) {
 	file_data, read_ok := os.read_entire_file(file_name);
+	fmt.println(read_ok);
+	log.info(read_ok, file_data);
 	if !read_ok do return {}, false;
 	file_info, file_ok := psd_file_load_from_memory(file_data);
 	delete(file_data);
@@ -399,7 +401,6 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 	file_info.first_layer_transparent = layer_count < 0; // first_alpha_channel_contains_transparency_data
 
 	layer_count = layer_count < 0 ? -layer_count : layer_count;
-	log.info("psd has ", layer_count, "layers");
 	for l in 0 ..< layer_count {
 		if current_pos^ > layer_mask_start_pos + u32(layer_mask_len) {
 			_psd_log("exceeded layer mask position, exiting");
