@@ -103,7 +103,6 @@ psd_file_load :: proc {psd_file_load_from_disk, psd_file_load_from_memory};
 psd_file_load_from_disk :: proc (file_name : string) -> (Psd_File_Info, bool) {
 	file_data, read_ok := os.read_entire_file(file_name);
 	fmt.println(read_ok);
-	log.info(read_ok, file_data);
 	if !read_ok do return {}, false;
 	file_info, file_ok := psd_file_load_from_memory(file_data);
 	delete(file_data);
