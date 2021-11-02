@@ -67,7 +67,7 @@ Psd_Layer_Info :: struct {
 	layer_record     : Psd_Layer_Record,
 	composited_image : []byte,
 	transparentMask  : Psd_Dimensions,
-	hasMask          : bool
+	hasMask          : bool,
 
 }
 
@@ -78,7 +78,7 @@ Psd_Dimensions :: struct {
 Psd_Channel_Info :: struct #packed {
 	id   : i32,
 	data : u32,
-	offset : u64
+	offset : u64,
 }
 
 Psd_Channel_Image :: struct {
@@ -588,9 +588,7 @@ _psd_read_layer_and_mask_data :: proc(file_info : ^Psd_File_Info, file_data: []b
 					layer_info.group = true;
 				}
 				current_pos^ += u32(length - 4);
-			}
-			//utf-16 name
-			else if keycode_str == "luni" {
+			} else if keycode_str == "luni" {
 				total_characters : u32be;
 
 				if !_read_from_buffer(mem.ptr_to_bytes(&total_characters), file_data, current_pos) do return _report_error("couldn't read layer unicode name length");
