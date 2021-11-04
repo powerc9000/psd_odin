@@ -790,7 +790,29 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 				run := int(-header) + 1;
 
 				if image_idx + run < len(image.image_data) {
-					mem.set(&image.image_data[image_idx], data_byte, run);
+					out := image.image_data[image_idx:image_idx+run];
+					val_u16 := u16(data_byte) | u16(data_byte) << 8
+					val_u32 := u32(val_u16) | u32(val_u16) << 16
+					val_u64 := u64(val_u32) | u64(val_u32) << 32
+					for len(out) >= 8 {
+						datum := transmute(^u64)&out[0];
+						datum^ = val_u64;
+						out = out[8:];
+					}
+					for len(out) >= 4 {
+						datum := transmute(^u32)&out[0];
+						datum^ = val_u32;
+						out = out[4:];
+					}
+					for len(out) >= 2 {
+						datum := transmute(^u16)&out[0];
+						datum^ = val_u16;
+						out = out[2:];
+					}
+					for len(out) >= 1 {
+						out[0] = data_byte;
+						out = out[1:];
+					}
 					pixels_this_row += run;
 					image_idx += run;
 				}
