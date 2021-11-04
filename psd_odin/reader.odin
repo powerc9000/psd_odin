@@ -768,24 +768,25 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 		neg := 0;
 		pixels_this_row := 0;
 		for {
+			current := current_pos^;
 			if image_idx >= len(image.image_data) {
 				fmt.println("overran");
 				return _report_error("overran data");
 			}
-			header := i8(file_data[current_pos^]);
-			current_pos^ += 1;
+			header := i8(file_data[current]);
+			current += 1;
 			sections += 1;
 			if header >= 0 { 
 				// 1 + header bytes of data
 				iheader := int(header) + 1;
-				if !_read_from_buffer(mem.ptr_to_bytes(&image.image_data[image_idx], iheader), file_data, current_pos) do return _report_error("unable to read rle data");
+				if !_read_from_buffer(mem.ptr_to_bytes(&image.image_data[image_idx], iheader), file_data, &current) do return _report_error("unable to read rle data");
 				image_idx += iheader;
 				pixels_this_row += iheader;
 				pos += 1;
 			} else if header != -128 { 
 				// one byte of data repeated (1 - header) times
-				data_byte : byte = file_data[current_pos^];
-				current_pos^ += 1;
+				data_byte : byte = file_data[current];
+				current += 1;
 				run := int(-header) + 1;
 
 				if image_idx + run < len(image.image_data) {
@@ -806,6 +807,7 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 			}
 			// else no operation, just skip and grab the next header
 
+			current_pos^ = current;
 			if current_pos^ >= stop_pos {
 				if current_pos^ > stop_pos {
 					_psd_log("went over by ", current_pos^ - stop_pos);
