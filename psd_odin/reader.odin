@@ -861,7 +861,7 @@ _psd_logf :: proc(format:string, args : ..any) {
 	//	log.debugf(format, ..args);
 }
 
-_psd_log_error :: proc(args : ..any) {
+_psd_log_error :: proc(args : ..any, location := #caller_location) {
 	//fmt.println(..args);
-	log.error(..args);
+	log.error(args=args, location=location);
 }
