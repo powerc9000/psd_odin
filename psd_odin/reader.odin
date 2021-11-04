@@ -334,7 +334,7 @@ psd_create_layer_image :: proc(layer: ^Psd_Layer_Info, dWidth, dHeight: int, fil
 					finalPixel := (h * dWidth) + w;
 
 					idx := finalPixel * 4;
-					
+
 					if layerX < 0 || layerX >= width || layerY < 0 || layerY >= height {
 						layer.composited_image[idx + 0] = 0;
 						layer.composited_image[idx + 1] = 0;
@@ -737,7 +737,6 @@ return {}, _report_error("unsupported compression encountered [3]");
 }
 
 // ----------------------------------------------------------------------------
-
 _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[]byte, current_pos : ^u32) -> bool {
 	rle_scanlines := make([]i16be, height);
 	defer delete(rle_scanlines);
@@ -773,46 +772,55 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 				fmt.println("overran");
 				return _report_error("overran data");
 			}
-			header : i8;
-			if !_read_from_buffer(mem.ptr_to_bytes(&header), file_data, current_pos) do return _report_error("unable to read rle header");
+			header := i8(file_data[current_pos^]);
+			current_pos^ += 1;
 			sections += 1;
-			if header >= 0 { // 1 + header bytes of data
-			iheader := int(header) + 1;
-			if !_read_from_buffer(mem.ptr_to_bytes(&image.image_data[image_idx], iheader), file_data, current_pos) do return _report_error("unable to read rle data");
-			image_idx += iheader;
-			pixels_this_row += iheader;
-			pos += 1;
-		}
-		else if header != -128 { // one byte of data repeated (1 - header) times
-		data_byte : byte;
-		if !_read_from_buffer(mem.ptr_to_bytes(&data_byte), file_data, current_pos) do return _report_error("unable to read rle data byte");
-		run := int(-header) + 1;
-		for d := 0; d < run; d += 1 {
-			if image_idx < len(image.image_data) {
-				image.image_data[image_idx] = data_byte;
+			if header >= 0 { 
+				// 1 + header bytes of data
+				iheader := int(header) + 1;
+				if !_read_from_buffer(mem.ptr_to_bytes(&image.image_data[image_idx], iheader), file_data, current_pos) do return _report_error("unable to read rle data");
+				image_idx += iheader;
+				pixels_this_row += iheader;
+				pos += 1;
+			} else if header != -128 { 
+				// one byte of data repeated (1 - header) times
+				data_byte : byte = file_data[current_pos^];
+				current_pos^ += 1;
+				run := int(-header) + 1;
+
+				if image_idx + run < len(image.image_data) {
+					mem.set(&image.image_data[image_idx], data_byte, run);
+					pixels_this_row += run;
+					image_idx += run;
+				}
+				/*
+				for d := 0; d < run; d += 1 {
+					if image_idx < len(image.image_data) {
+						image.image_data[image_idx] = data_byte;
+					}
+					image_idx += 1;
+					pixels_this_row += 1;
+				}
+				*/
+				neg += 1;
 			}
-			image_idx += 1;
-			pixels_this_row += 1;
-		}
-		neg += 1;
-	}
-	// else no operation, just skip and grab the next header
+			// else no operation, just skip and grab the next header
 
-	if current_pos^ >= stop_pos {
-		if current_pos^ > stop_pos {
-			_psd_log("went over by ", current_pos^ - stop_pos);
-		}
-		rows_by_stop += 1;
-		if pixels_this_row > width do _psd_log("row over by ", pixels_this_row - width, " pixels");
+			if current_pos^ >= stop_pos {
+				if current_pos^ > stop_pos {
+					_psd_log("went over by ", current_pos^ - stop_pos);
+				}
+				rows_by_stop += 1;
+				if pixels_this_row > width do _psd_log("row over by ", pixels_this_row - width, " pixels");
 
-		if pixels_this_row < width {
-			_psd_log("row ", h, " is short ", width-pixels_this_row, " pixels.  sections: ", sections, " pos:", pos, " neg:", neg);
-			image_idx += width - pixels_this_row;
-		}
+				if pixels_this_row < width {
+					_psd_log("row ", h, " is short ", width-pixels_this_row, " pixels.  sections: ", sections, " pos:", pos, " neg:", neg);
+					image_idx += width - pixels_this_row;
+				}
 
-		break;
-	}
-}
+				break;
+			}
+		}
 	}
 
 	_psd_log("rows_by_width = ", rows_by_width, "  rows_by_stop = ", rows_by_stop);
