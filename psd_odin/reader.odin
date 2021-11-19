@@ -345,12 +345,19 @@ psd_create_layer_image :: proc(layer: ^Psd_Layer_Info, dWidth, dHeight: int, fil
 					r := layer.channel_images[rIndex];
 					g := layer.channel_images[gIndex];
 					b := layer.channel_images[bIndex];
-					a := layer.channel_images[aIndex];
+					a : Psd_Channel_Image; 
+					if aIndex > -1 {
+						a = layer.channel_images[aIndex];
+					}
 
 					layer.composited_image[idx + 0] = r.image_data[channelValue];
 					layer.composited_image[idx + 1] = g.image_data[channelValue];
 					layer.composited_image[idx + 2] = b.image_data[channelValue];
-					layer.composited_image[idx + 3] = a.image_data[channelValue];
+					if aIndex > -1 {
+						layer.composited_image[idx + 3] = a.image_data[channelValue];
+					} else {
+						layer.composited_image[idx + 3] = 1;
+					}
 					if maskIndex != -1   {
 						docX := int(layer.dimensions.left) + layerX;
 						docY := int(layer.dimensions.top) + layerY;
