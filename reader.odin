@@ -278,7 +278,12 @@ _psd_read_image_resources_data :: proc(file_info : ^Psd_File_Info, file_data: []
 }
 
 // ----------------------------------------------------------------------------
-
+get_pixel :: proc(data: []byte, index: int) -> u8 {
+	if index < len(data) {
+		return data[index];
+	}
+	return 0;
+}
 psd_create_layer_image :: proc(layer: ^Psd_Layer_Info, dWidth, dHeight: int, file_data: []byte) -> []byte{
 	find_channel :: proc(layer: Psd_Layer_Info, id: i32) -> int {
 		result := -1;
@@ -349,13 +354,13 @@ psd_create_layer_image :: proc(layer: ^Psd_Layer_Info, dWidth, dHeight: int, fil
 						a = layer.channel_images[aIndex];
 					}
 
-					layer.composited_image[idx + 0] = r.image_data[channelValue];
-					layer.composited_image[idx + 1] = g.image_data[channelValue];
-					layer.composited_image[idx + 2] = b.image_data[channelValue];
+					layer.composited_image[idx + 0] = get_pixel(r.image_data, channelValue);
+					layer.composited_image[idx + 1] = get_pixel(g.image_data, channelValue);
+					layer.composited_image[idx + 2] = get_pixel(b.image_data, channelValue);
 					if aIndex > -1 {
-						layer.composited_image[idx + 3] = a.image_data[channelValue];
+						layer.composited_image[idx + 3] = get_pixel(a.image_data, channelValue);
 					} else {
-						layer.composited_image[idx + 3] = 1;
+						layer.composited_image[idx + 3] = 255;
 					}
 					if maskIndex != -1   {
 						docX := int(layer.dimensions.left) + layerX;
@@ -793,8 +798,7 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 				data_byte : byte = file_data[current];
 				current += 1;
 				run := int(-header) + 1;
-
-				if image_idx + run < len(image.image_data) {
+				if image_idx + run <= len(image.image_data) {
 					out := image.image_data[image_idx:image_idx+run];
 					val_u16 := u16(data_byte) | u16(data_byte) << 8
 					val_u32 := u32(val_u16) | u32(val_u16) << 16
@@ -820,7 +824,7 @@ _rle_decode :: proc (width, height : int, image: ^Psd_Channel_Image, file_data:[
 					}
 					pixels_this_row += run;
 					image_idx += run;
-				}
+				} 
 				/*
 				for d := 0; d < run; d += 1 {
 					if image_idx < len(image.image_data) {
